@@ -312,7 +312,8 @@ class Game:
             self.state = State.DRAW_WAITING_AREA
         elif self.state == State.DRAW_WAITING_AREA:
             if self.active_player.waiting_area:
-                self.log(f'draws {len(self.active_player.waiting_area)} card{"s" if len(self.active_player.waiting_area) > 1 else ""} from waiting area')
+                waiting_area_size = len(self.active_player.waiting_area)
+                self.log(f'draws {waiting_area_size} card{"s" if waiting_area_size > 1 else ""} from waiting area')
                 self.active_player.hand.add_to_hand(self.active_player.waiting_area)
                 self.active_player.waiting_area = []
             self.active_player_ix = (self.active_player_ix + 1) % len(self.players)
@@ -331,13 +332,28 @@ class Game:
         amount = 1 + sum(1 for helper in self.active_player.helpers
                          if helper.material == task.material)
         self.log(f'- {amount} {task.material.task} action{"s" if amount > 1 else ""} available')
-        # TODO: Check if an action can be done before offering it
         for action_number in range(amount):
             available_actions = []
             action_descriptions = []
 
-            available_actions.append(task.material)
-            action_descriptions.append(f'{task.material.task} ({task.material.description})')
+            if task.material == PAPER and not self.active_player.craft_bench:
+                self.log(f'cannot {task.material.task} with an empty craft bench')
+            elif task.material in (STONE, CLAY) and not self.floor:
+                self.log(f'cannot {task.material.task} with an empty floor')
+            elif task.material == CLOTH and len(self.active_player.waiting_area) == 5:
+                self.log(f'cannot {task.material.task} with a full waiting area')
+            elif task.material == METAL and not self.active_player.hand:
+                self.log(f'cannot {task.material.task} with an empty hand')
+            else:
+                available_actions.append(task.material)
+                action_descriptions.append(f'{task.material.task} ({task.material.description})')
+
+            # This test is disabled as it reveals information about hand to opponents
+            # (even without the log, by the speed in which the fallback prayer is done)
+            #
+            # if not any(card.card.material == task.material for card in self.active_player.hand):
+            #     self.log(f'cannot Craft {task.material.name} with no matching cards in hand')
+            # else:
 
             available_actions.append('craft')
             action_descriptions.append(f'Craft ({task.material.name})')
