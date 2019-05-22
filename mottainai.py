@@ -180,8 +180,8 @@ class Player:
         self.gallery = []
         self.gift_shop = []
         self.helpers = []
-        self.sales = []
         self.craft_bench = []
+        self.sales = []
         self.waiting_area = []
         self.task = None
         self.initial_task = None
@@ -222,6 +222,11 @@ class State(Enum):
     PERFORM_OWN_TASK = auto()
     PERFORM_TASK = auto()
     PERFORM_ACTION = auto()
+    PERFORM_CLERK = auto()
+    PERFORM_MONK = auto()
+    PERFORM_TAILOR = auto()
+    PERFORM_POTTER = auto()
+    PERFORM_SMITH = auto()
     NIGHT_EFFECTS = auto()
     DRAW_WAITING_AREA = auto()
     GAME_OVER = auto()
@@ -245,7 +250,7 @@ class Game:
         self.actions_to_perform = None
         self.next_states = []
 
-    def start_game(self, player_count=2):
+    def start_game(self, player_count=1):
         self.players = [Player(i + 1) for i in range(player_count)]
         self.deck = Deck(random.sample(CARDS, len(CARDS)))
         for p in self.players:
@@ -318,7 +323,7 @@ class Game:
                 self.state = State.PERFORM_OPPONENT_TASK
             else:
                 self.instruction = 'Choose task'
-                self.possible_moves = [f'{x.card.material.task} - {x.card}' for x in self.active_player.hand]
+                self.possible_moves = [f'{x.card.material.task} ({x.card.material.description}) - {x.card}' for x in self.active_player.hand]
                 self.possible_moves.append('Pray')
                 self.number_of_moves_to_choose = 1
                 self.state = State.CHOOSE_NEW_TASK
@@ -368,7 +373,7 @@ class Game:
                     self.actions_to_perform = None
                     self.state = self.next_states.pop()
                 else:
-                    self.instruction = f'Choose how to perform action #{self.current_action_num}'
+                    self.instruction = f'Choose how to perform action #{self.current_action_num} of {self.actions_to_perform}'
                     self.possible_moves_internal = []
                     self.possible_moves = []
 
@@ -403,37 +408,81 @@ class Game:
                     self.next_states.append(State.PERFORM_TASK)
 
         elif self.state == State.PERFORM_ACTION:
-            action_performed = False
             action = self.possible_moves_internal[self.submitted_moves]
             self.possible_moves = None
 
             if action == PAPER:
-                self.log('TODO: Clerk')
-                action_performed = True
+                self.state = State.PERFORM_CLERK
+                self.instruction = 'Select a material from the craft bench to sell'
+                self.possible_moves = []
+                self.possible_moves.extend(self.active_player.craft_bench)
+                self.possible_moves.append('Cancel')
+                self.number_of_moves_to_choose = 1
+                return
             elif action == STONE:
-                self.log('TODO: Monk')
-                action_performed = True
+                self.state = State.PERFORM_MONK
+                self.instruction = 'Select a card from the floor to become a helper'
+                self.possible_moves = []
+                self.possible_moves.extend(self.floor)
+                self.possible_moves.append('Cancel')
+                self.number_of_moves_to_choose = 1
+                return
             elif action == CLOTH:
                 self.log('TODO: Tailor')
-                action_performed = True
             elif action == CLAY:
-                self.log('TODO: Potter')
-                action_performed = True
+                self.state = State.PERFORM_POTTER
+                self.instruction = 'Select a card from the floor to collect in the craft bench'
+                self.possible_moves = []
+                self.possible_moves.extend(self.floor)
+                self.possible_moves.append('Cancel')
+                self.number_of_moves_to_choose = 1
+                return
             elif action == METAL:
                 self.log('TODO: Smith')
-                action_performed = True
             elif action == 'craft':
                 self.log('TODO: Craft')
-                action_performed = True
             elif action == 'pray':
                 self.log('prays')
                 self.active_player.waiting_area.append(self.deck.draw())
-                action_performed = True
+                self.possible_moves = []
+                if self.current_action_num:
+                    self.current_action_num += 1
             else:
                 raise Exception(f'Unknown action {action}')
 
-            if action_performed:
-                self.current_action_num += 1
+            self.state = self.next_states.pop()
+
+        elif self.state == State.PERFORM_CLERK:
+            if self.submitted_moves < len(self.possible_moves) - 1:
+                card = self.active_player.craft_bench[self.submitted_moves]
+                self.active_player.sales.append(card)
+                self.active_player.craft_bench.pop(self.submitted_moves)
+                self.log(f'moves {card} from craft bench to sales')
+                if self.current_action_num:
+                    self.current_action_num += 1
+            self.possible_moves = None
+            self.state = self.next_states.pop()
+
+        elif self.state == State.PERFORM_MONK:
+            if self.submitted_moves < len(self.possible_moves) - 1:
+                card = self.floor[self.submitted_moves]
+                self.active_player.helpers.append(card)
+                self.floor.pop(self.submitted_moves)
+                self.log(f'moves {card} from floor to helpers')
+                if self.current_action_num:
+                    self.current_action_num += 1
+            self.possible_moves = None
+            self.state = self.next_states.pop()
+
+        elif self.state == State.PERFORM_POTTER:
+            if self.submitted_moves < len(self.possible_moves) - 1:
+                card = self.floor[self.submitted_moves]
+                self.active_player.craft_bench.append(card)
+                self.floor.pop(self.submitted_moves)
+                self.log(f'moves {card} from floor to craft bench')
+                if self.current_action_num:
+                    self.current_action_num += 1
+            self.possible_moves = None
             self.state = self.next_states.pop()
 
         elif self.state == State.PERFORM_OWN_TASK:
@@ -478,8 +527,14 @@ class Game:
                 print(f'\tTask: {p.task.material.task if p.task else "None"} - {p.task}')
             else:
                 print('\tTask: None')
+            if p.helpers:
+                print(f'\tHelpers: {p.helpers}')
+            if p.craft_bench:
+                print(f'\tCraft Bench: {p.craft_bench}')
+            if p.sales:
+                print(f'\tSales: {p.sales}')
             if p.waiting_area:
-                print(f'Waiting area: {len(p.waiting_area)}')
+                print(f'Waiting Area: {len(p.waiting_area)}')
         print()
 
 if __name__ == '__main__':
