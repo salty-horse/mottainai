@@ -6,6 +6,34 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from functools import total_ordering
 
+def prompt_choice(player_name, instruction, options, n=1):
+    if len(options) == n:
+        if n > 1:
+            return list(range(n))
+        else:
+            return 0
+    print(f'{player_name} - {instruction}:')
+    for i, c in enumerate(options):
+        print(f'  {i+1}. {c}')
+    while True:
+        choice = input('> ').strip()
+        if n == 1:
+            try:
+                choice = int(choice) - 1
+                if 0 <= choice < len(options):
+                    return choice
+            except:
+                pass
+        else:
+            try:
+                l = [int(x) - 1 for x in re.split('[, ]', choice)]
+                if len(set(l)) == n and all(0 <= x < len(options) for x in l):
+                    return l
+            except:
+                pass
+        print('Invalid choice')
+
+
 @dataclass(frozen=True)
 class Material:
     id: int
@@ -185,11 +213,15 @@ class Deck:
 
 
 class State(Enum):
+    CHECK_HAND_SIZE = auto()
     REDUCE_HAND = auto()
     MORNING_EFFECTS = auto()
-    DISCARD_AND_CHOOSE_TASK = auto()
+    DISCARD_OLD_TASK = auto()
+    CHOOSE_NEW_TASK = auto()
     PERFORM_OPPONENT_TASK = auto()
     PERFORM_OWN_TASK = auto()
+    PERFORM_TASK = auto()
+    PERFORM_ACTION = auto()
     NIGHT_EFFECTS = auto()
     DRAW_WAITING_AREA = auto()
     GAME_OVER = auto()
@@ -199,6 +231,19 @@ class Game:
     def __init__(self):
         self.floor = []
         self.active_player_ix = None
+
+        # These are for the state machine move selection
+        self.possible_moves = None
+        self.possible_moves_internal = None
+        self.instruction = None
+        self.number_of_moves_to_choose = None
+        self.submitted_moves = None
+
+        self.opponents_with_tasks = None
+        self.current_task_to_perform = None
+        self.current_action_num = None
+        self.actions_to_perform = None
+        self.next_states = []
 
     def start_game(self, player_count=2):
         self.players = [Player(i + 1) for i in range(player_count)]
@@ -212,8 +257,15 @@ class Game:
         self.turn_number = 1
         self.log('goes first')
         self.print_state()
-        self.state = State.DISCARD_AND_CHOOSE_TASK
+        self.state = State.DISCARD_OLD_TASK
         while self.state != State.GAME_OVER:
+            if self.possible_moves:
+                self.submitted_moves = prompt_choice(
+                    self.active_player.name,
+                    self.instruction,
+                    self.possible_moves,
+                    self.number_of_moves_to_choose)
+            print(f'State is {self.state}')
             self.handle_state()
 
     def log(self, message, player_name=True, space=True):
@@ -226,50 +278,32 @@ class Game:
     def active_player(self):
         return self.players[self.active_player_ix]
 
-    def prompt_choice(self, instruction, options, n=1):
-        if len(options) == n:
-            if n > 1:
-                return list(range(n))
-            else:
-                return 0
-        print(f'Player {self.active_player_ix + 1} - {instruction}:')
-        for i, c in enumerate(options):
-            print(f'  {i+1}. {c}')
-        while True:
-            choice = input('> ').strip()
-            if n == 1:
-                try:
-                    choice = int(choice) - 1
-                    if 0 <= choice < len(options):
-                        return choice
-                except:
-                    pass
-            else:
-                try:
-                    l = [int(x) - 1 for x in re.split('[, ]', choice)]
-                    if len(set(l)) == n and all(0 <= x < len(options) for x in l):
-                        return l
-                except:
-                    pass
-            print('Invalid choice')
-
     def handle_state(self):
-        if self.state == State.REDUCE_HAND:
+        if self.state == State.CHECK_HAND_SIZE:
             self.log("'s turn", space=False)
-            if len(self.active_player.hand) > 5:
+            if len(self.active_player.hand) <= 5:
+                self.state = State.MORNING_EFFECTS
+            else:
                 n = len(self.active_player.hand) - 5
-                choices = self.prompt_choice(f'Choose {n} cards to return', self.active_player.hand, n=n)
-                returned_cards = [self.active_player.hand[i].card for i in choices]
-                self.active_player.hand = Hand(x for i, x in enumerate(self.active_player.hand) if i not in choices)
-                self.deck.return_cards(returned_cards)
-                self.active_player.hand.hide()
-                self.log(f'returns {n} card{"s" if n > 1 else ""}')
+                self.instruction = f'Choose {n} card{"s" if n > 1 else ""} to return'
+                self.possible_moves = self.active_player.hand
+                self.number_of_moves_to_choose = n
+                self.state = State.REDUCE_HAND
+        elif self.state == State.REDUCE_HAND:
+            if isinstance(self.submitted_moves, int):
+                self.submitted_moves = [self.submitted_moves]
+            returned_cards = [self.active_player.hand[i].card for i in self.submitted_moves]
+            self.active_player.hand = Hand(x for i, x in enumerate(self.active_player.hand) if i not in self.submitted_moves)
+            self.possible_moves = None
+            self.deck.return_cards(returned_cards)
+            self.active_player.hand.hide()
+            self.log(f'returns {len(returned_cards)} card{"s" if len(returned_cards) > 1 else ""}')
             self.state = State.MORNING_EFFECTS
         elif self.state == State.MORNING_EFFECTS:
             # TODO
             self.log('TODO: morning effects', player_name=False)
-            self.state = State.DISCARD_AND_CHOOSE_TASK
-        elif self.state == State.DISCARD_AND_CHOOSE_TASK:
+            self.state = State.DISCARD_OLD_TASK
+        elif self.state == State.DISCARD_OLD_TASK:
             if self.active_player.initial_task:
                 self.floor.append(self.active_player.initial_task)
                 self.log(f'initial task {self.active_player.initial_task} added to floor')
@@ -279,35 +313,139 @@ class Game:
                 self.log(f'previous task {self.active_player.task} added to floor')
                 self.active_player.task = None
 
-            if self.active_player.hand:
-                choices = [f'{x.card.material.task} - {x.card}' for x in self.active_player.hand]
-                choices.append('Pray')
-                chosen_task_ix = self.prompt_choice('Choose task', choices)
-                if chosen_task_ix == len(choices) - 1:
-                    self.active_player.task = None
-                    self.log('chooses no new task')
-                else:
-                    self.active_player.task = self.active_player.hand[chosen_task_ix].card
-                    self.log(f'chooses new task {self.active_player.task.material.task} - {self.active_player.task}')
-                    self.active_player.hand.pop(chosen_task_ix)
+            if not self.active_player.hand:
+                self.log('chooses no new task')
+                self.state = State.PERFORM_OPPONENT_TASK
+            else:
+                self.instruction = 'Choose task'
+                self.possible_moves = [f'{x.card.material.task} - {x.card}' for x in self.active_player.hand]
+                self.possible_moves.append('Pray')
+                self.number_of_moves_to_choose = 1
+                self.state = State.CHOOSE_NEW_TASK
+        elif self.state == State.CHOOSE_NEW_TASK:
+            if self.submitted_moves == len(self.possible_moves) - 1:
+                self.active_player.task = None
+                self.log('chooses no new task')
+            else:
+                self.active_player.task = self.active_player.hand[self.submitted_moves].card
+                self.log(f'chooses new task {self.active_player.task.material.task} - {self.active_player.task}')
+                self.active_player.hand.pop(self.submitted_moves)
+            self.possible_moves = None
             self.state = State.PERFORM_OPPONENT_TASK
-            self.print_state()
         elif self.state == State.PERFORM_OPPONENT_TASK:
-            opponents = self.players[(self.active_player_ix+1):] + self.players[:self.active_player_ix]
-            for opp in opponents:
+            self.print_state()
+            if self.opponents_with_tasks is None:
+                opponents_with_tasks = self.players[(self.active_player_ix+1):] + self.players[:self.active_player_ix]
+            if not self.opponents_with_tasks:
+                self.opponents_with_tasks = None
+                self.state = State.PERFORM_OWN_TASK
+            else:
+                opp = self.opponents_with_tasks.pop(0)
                 if opp.task:
                     self.log(f"performs opponent {opp.name}'s {opp.task.material.task} task")
-                    self.perform_task(opp.task, belongs_to_active_player=False)
+                    self.current_task_to_perform = opp.task
+                    self.current_task_is_of_opponent = True
+                    self.state = State.PERFORM_TASK
+                    self.next_states.append(State.PERFORM_OPPONENT_TASK)
                 else:
                     self.log(f'Opponent {opp.name} has no task', player_name=False)
-            self.state = State.PERFORM_OWN_TASK
+
+        elif self.state == State.PERFORM_TASK:
+            task = self.current_task_to_perform
+            if not task:
+                self.log('prays')
+                self.active_player.waiting_area.append(self.deck.draw())
+                self.state = self.next_states.pop()
+            else:
+                if self.actions_to_perform is None:
+                    # TODO: Calc cover
+                    self.actions_to_perform = 1 + sum(1 for helper in self.active_player.helpers
+                                     if helper.material == task.material)
+                    self.log(f'- {self.actions_to_perform} {task.material.task} action{"s" if self.actions_to_perform > 1 else ""} available')
+                    self.current_action_num = 1
+
+                if self.current_action_num > self.actions_to_perform:
+                    self.actions_to_perform = None
+                    self.state = self.next_states.pop()
+                else:
+                    self.instruction = f'Choose how to perform action #{self.current_action_num}'
+                    self.possible_moves_internal = []
+                    self.possible_moves = []
+
+                    # TODO: Check if works can be completed before allowing CRAFT or SMITH
+
+                    if task.material == PAPER and not self.active_player.craft_bench:
+                        self.log(f'cannot {task.material.task} with an empty craft bench')
+                    elif task.material in (STONE, CLAY) and not self.floor:
+                        self.log(f'cannot {task.material.task} with an empty floor')
+                    elif task.material == CLOTH and len(self.active_player.waiting_area) == 5:
+                        self.possible_moves_internal.append(task.material)
+                        self.possible_moves.append(f'{task.material.task} (PASS since the waiting area is full)')
+                    elif task.material == METAL and not self.active_player.hand:
+                        self.log(f'cannot {task.material.task} with an empty hand')
+                    else:
+                        self.possible_moves_internal.append(task.material)
+                        self.possible_moves.append(f'{task.material.task} ({task.material.description})')
+
+                    # This test is disabled as it reveals information about hand to opponents
+                    # (even without the log, by the speed in which the fallback prayer is done)
+                    #
+                    # if not any(card.card.material == task.material for card in self.active_player.hand):
+                    #     self.log(f'cannot Craft {task.material.name} with no matching cards in hand')
+                    # else:
+
+                    self.possible_moves_internal.append('craft')
+                    self.possible_moves.append(f'Craft ({task.material.name})')
+
+                    self.possible_moves_internal.append('pray')
+                    self.possible_moves.append('Pray')
+                    self.state = State.PERFORM_ACTION
+                    self.next_states.append(State.PERFORM_TASK)
+
+        elif self.state == State.PERFORM_ACTION:
+            action_performed = False
+            action = self.possible_moves_internal[self.submitted_moves]
+            self.possible_moves = None
+
+            if action == PAPER:
+                self.log('TODO: Clerk')
+                action_performed = True
+            elif action == STONE:
+                self.log('TODO: Monk')
+                action_performed = True
+            elif action == CLOTH:
+                self.log('TODO: Tailor')
+                action_performed = True
+            elif action == CLAY:
+                self.log('TODO: Potter')
+                action_performed = True
+            elif action == METAL:
+                self.log('TODO: Smith')
+                action_performed = True
+            elif action == 'craft':
+                self.log('TODO: Craft')
+                action_performed = True
+            elif action == 'pray':
+                self.log('prays')
+                self.active_player.waiting_area.append(self.deck.draw())
+                action_performed = True
+            else:
+                raise Exception(f'Unknown action {action}')
+
+            if action_performed:
+                self.current_action_num += 1
+            self.state = self.next_states.pop()
+
         elif self.state == State.PERFORM_OWN_TASK:
             if self.active_player.task:
                 self.log(f'performs own {self.active_player.task.material.task} task')
             else:
                 self.log('performs own missing task')
-            self.perform_task(self.active_player.task)
-            self.state = State.NIGHT_EFFECTS
+            self.current_task_to_perform = self.active_player.task
+            self.current_task_is_of_opponent = False
+            self.state = State.PERFORM_TASK
+            self.next_states.append(State.NIGHT_EFFECTS)
+
         elif self.state == State.NIGHT_EFFECTS:
             # TODO
             self.log('TODO: night effects', player_name=False)
@@ -321,84 +459,11 @@ class Game:
             self.active_player_ix = (self.active_player_ix + 1) % len(self.players)
             if self.active_player_ix == self.first_player_ix:
                 self.turn_number += 1
-            self.state = State.REDUCE_HAND
+            self.state = State.CHECK_HAND_SIZE
             self.print_state()
         else:
             raise Exception(f'Unknown state {self.state}')
     
-    def perform_task(self, task, belongs_to_active_player=True):
-        if not task:
-            self.log('prays')
-            self.active_player.waiting_area.append(self.deck.draw())
-            return
-
-        # TODO: Calc cover
-        amount = 1 + sum(1 for helper in self.active_player.helpers
-                         if helper.material == task.material)
-        self.log(f'- {amount} {task.material.task} action{"s" if amount > 1 else ""} available')
-        for action_number in range(amount):
-            available_actions = []
-            action_descriptions = []
-
-            if task.material == PAPER and not self.active_player.craft_bench:
-                self.log(f'cannot {task.material.task} with an empty craft bench')
-            elif task.material in (STONE, CLAY) and not self.floor:
-                self.log(f'cannot {task.material.task} with an empty floor')
-            elif task.material == CLOTH and len(self.active_player.waiting_area) == 5:
-                available_actions.append(task.material)
-                action_descriptions.append(f'{task.material.task} (PASS since the waiting area is full)')
-            elif task.material == METAL and not self.active_player.hand:
-                self.log(f'cannot {task.material.task} with an empty hand')
-            else:
-                available_actions.append(task.material)
-                action_descriptions.append(f'{task.material.task} ({task.material.description})')
-
-            # This test is disabled as it reveals information about hand to opponents
-            # (even without the log, by the speed in which the fallback prayer is done)
-            #
-            # if not any(card.card.material == task.material for card in self.active_player.hand):
-            #     self.log(f'cannot Craft {task.material.name} with no matching cards in hand')
-            # else:
-
-            available_actions.append('craft')
-            action_descriptions.append(f'Craft ({task.material.name})')
-
-            available_actions.append('pray')
-            action_descriptions.append('Pray')
-
-            action_performed = False
-            while not action_performed:
-                chosen_action = self.prompt_choice(f'Choose how to perform action #{action_number + 1}', action_descriptions)
-                action_performed = self.perform_action(available_actions[chosen_action], task)
-
-    def perform_action(self, action, card):
-        if action == PAPER:
-            self.log('TODO: Clerk')
-            return True
-        elif action == STONE:
-            self.log('TODO: Monk')
-            return True
-        elif action == CLOTH:
-            self.log('TODO: Tailor')
-            return True
-        elif action == CLAY:
-            self.log('TODO: Potter')
-            return True
-        elif action == METAL:
-            self.log('TODO: Smith')
-            return True
-        elif action == 'craft':
-            self.log('TODO: Craft')
-            return True
-        elif action == 'pray':
-            self.log('prays')
-            self.active_player.waiting_area.append(self.deck.draw())
-            return True
-        else:
-            raise Exception(f'Unknown action {action}')
-
-        return True
-
     def print_state(self):
         print()
         print(f'Turn {self.turn_number}, {self.active_player.name} active')
