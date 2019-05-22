@@ -208,9 +208,11 @@ class Game:
             p.initial_task = self.deck.draw()
             self.floor.append(self.deck.draw())
         self.active_player_ix = sorted(enumerate(self.floor), key=lambda x: x[1].name.lower())[0][0]
+        self.first_player_ix = self.active_player_ix
+        self.turn_number = 1
         self.log('goes first')
         self.print_state()
-        self.state = State.REDUCE_HAND
+        self.state = State.DISCARD_AND_CHOOSE_TASK
         while self.state != State.GAME_OVER:
             self.handle_state()
 
@@ -317,6 +319,8 @@ class Game:
                 self.active_player.hand.add_to_hand(self.active_player.waiting_area)
                 self.active_player.waiting_area = []
             self.active_player_ix = (self.active_player_ix + 1) % len(self.players)
+            if self.active_player_ix == self.first_player_ix:
+                self.turn_number += 1
             self.state = State.REDUCE_HAND
             self.print_state()
         else:
@@ -397,6 +401,7 @@ class Game:
 
     def print_state(self):
         print()
+        print(f'Turn {self.turn_number}, {self.active_player.name} active')
         print(f'Deck: {len(self.deck)} card{"s" if len(self.deck) > 1 else ""}')
         print(f'Floor: {self.floor}')
         for i, p in enumerate(self.players):
