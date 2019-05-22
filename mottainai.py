@@ -341,7 +341,8 @@ class Game:
             elif task.material in (STONE, CLAY) and not self.floor:
                 self.log(f'cannot {task.material.task} with an empty floor')
             elif task.material == CLOTH and len(self.active_player.waiting_area) == 5:
-                self.log(f'cannot {task.material.task} with a full waiting area')
+                available_actions.append(task.material)
+                action_descriptions.append(f'{task.material.task} (PASS since the waiting area is full)')
             elif task.material == METAL and not self.active_player.hand:
                 self.log(f'cannot {task.material.task} with an empty hand')
             else:
