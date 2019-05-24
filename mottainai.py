@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from functools import total_ordering
 
-def prompt_choice(player_name, instruction, options, n=1):
+def prompt_choice(player_name, instruction, options, n=1, allow_cancel=True):
     if len(options) == n:
         if n > 1:
             return list(range(n))
@@ -15,11 +15,15 @@ def prompt_choice(player_name, instruction, options, n=1):
     print(f'{player_name} - {instruction}:')
     for i, c in enumerate(options):
         print(f'  {i+1}. {c}')
+    if allow_cancel:
+        print(f'  0. Cancel')
     while True:
         choice = input('> ').strip()
         if n == 1:
             try:
                 choice = int(choice) - 1
+                if allow_cancel and choice == -1:
+                    return -1
                 if 0 <= choice < len(options):
                     return choice
             except:
@@ -242,6 +246,7 @@ class Game:
         self.possible_moves_internal = None
         self.instruction = None
         self.number_of_moves_to_choose = None
+        self.allow_cancel = False
         self.submitted_moves = None
 
         self.opponents_with_tasks = None
@@ -249,6 +254,10 @@ class Game:
         self.current_action_num = None
         self.actions_to_perform = None
         self.next_states = []
+
+    def reset_possible_moves(self):
+        self.possible_moves = None
+        self.allow_cancel = False
 
     def start_game(self, player_count=1):
         self.players = [Player(i + 1) for i in range(player_count)]
@@ -269,7 +278,8 @@ class Game:
                     self.active_player.name,
                     self.instruction,
                     self.possible_moves,
-                    self.number_of_moves_to_choose)
+                    self.number_of_moves_to_choose,
+                    self.allow_cancel)
             print(f'State is {self.state}')
             self.handle_state()
 
@@ -299,7 +309,7 @@ class Game:
                 self.submitted_moves = [self.submitted_moves]
             returned_cards = [self.active_player.hand[i].card for i in self.submitted_moves]
             self.active_player.hand = Hand(x for i, x in enumerate(self.active_player.hand) if i not in self.submitted_moves)
-            self.possible_moves = None
+            self.reset_possible_moves()
             self.deck.return_cards(returned_cards)
             self.active_player.hand.hide()
             self.log(f'returns {len(returned_cards)} card{"s" if len(returned_cards) > 1 else ""}')
@@ -335,7 +345,7 @@ class Game:
                 self.active_player.task = self.active_player.hand[self.submitted_moves].card
                 self.log(f'chooses new task {self.active_player.task.material.task} - {self.active_player.task}')
                 self.active_player.hand.pop(self.submitted_moves)
-            self.possible_moves = None
+            self.reset_possible_moves()
             self.state = State.PERFORM_OPPONENT_TASK
         elif self.state == State.PERFORM_OPPONENT_TASK:
             self.print_state()
@@ -409,14 +419,14 @@ class Game:
 
         elif self.state == State.PERFORM_ACTION:
             action = self.possible_moves_internal[self.submitted_moves]
-            self.possible_moves = None
+            self.reset_possible_moves()
 
             if action == PAPER:
                 self.state = State.PERFORM_CLERK
                 self.instruction = 'Select a material from the craft bench to sell'
                 self.possible_moves = []
                 self.possible_moves.extend(self.active_player.craft_bench)
-                self.possible_moves.append('Cancel')
+                self.allow_cancel = True
                 self.number_of_moves_to_choose = 1
                 return
             elif action == STONE:
@@ -424,7 +434,7 @@ class Game:
                 self.instruction = 'Select a card from the floor to become a helper'
                 self.possible_moves = []
                 self.possible_moves.extend(self.floor)
-                self.possible_moves.append('Cancel')
+                self.allow_cancel = True
                 self.number_of_moves_to_choose = 1
                 return
             elif action == CLOTH:
@@ -434,7 +444,7 @@ class Game:
                 self.instruction = 'Select a card from the floor to collect in the craft bench'
                 self.possible_moves = []
                 self.possible_moves.extend(self.floor)
-                self.possible_moves.append('Cancel')
+                self.allow_cancel = True
                 self.number_of_moves_to_choose = 1
                 return
             elif action == METAL:
@@ -453,36 +463,36 @@ class Game:
             self.state = self.next_states.pop()
 
         elif self.state == State.PERFORM_CLERK:
-            if self.submitted_moves < len(self.possible_moves) - 1:
+            if self.submitted_moves != -1:
                 card = self.active_player.craft_bench[self.submitted_moves]
                 self.active_player.sales.append(card)
                 self.active_player.craft_bench.pop(self.submitted_moves)
                 self.log(f'moves {card} from craft bench to sales')
                 if self.current_action_num:
                     self.current_action_num += 1
-            self.possible_moves = None
+            self.reset_possible_moves()
             self.state = self.next_states.pop()
 
         elif self.state == State.PERFORM_MONK:
-            if self.submitted_moves < len(self.possible_moves) - 1:
+            if self.submitted_moves != -1:
                 card = self.floor[self.submitted_moves]
                 self.active_player.helpers.append(card)
                 self.floor.pop(self.submitted_moves)
                 self.log(f'moves {card} from floor to helpers')
                 if self.current_action_num:
                     self.current_action_num += 1
-            self.possible_moves = None
+            self.reset_possible_moves()
             self.state = self.next_states.pop()
 
         elif self.state == State.PERFORM_POTTER:
-            if self.submitted_moves < len(self.possible_moves) - 1:
+            if self.submitted_moves != -1:
                 card = self.floor[self.submitted_moves]
                 self.active_player.craft_bench.append(card)
                 self.floor.pop(self.submitted_moves)
                 self.log(f'moves {card} from floor to craft bench')
                 if self.current_action_num:
                     self.current_action_num += 1
-            self.possible_moves = None
+            self.reset_possible_moves()
             self.state = self.next_states.pop()
 
         elif self.state == State.PERFORM_OWN_TASK:
