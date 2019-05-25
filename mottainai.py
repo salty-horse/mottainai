@@ -7,7 +7,7 @@ from enum import Enum, auto
 from functools import total_ordering
 
 def prompt_choice(player_name, instruction, options, n=1, allow_cancel=True):
-    if len(options) == n:
+    if isinstance(n, int) and len(options) == n and not allow_cancel:
         if n > 1:
             return list(range(n))
         else:
@@ -30,9 +30,22 @@ def prompt_choice(player_name, instruction, options, n=1, allow_cancel=True):
                 pass
         else:
             try:
-                l = [int(x) - 1 for x in re.split('[, ]', choice)]
-                if len(set(l)) == n and all(0 <= x < len(options) for x in l):
-                    return l
+                if not choice:
+                    l = []
+                else:
+                    l = list(set(int(x) - 1 for x in re.split('[, ]', choice)))
+                if isinstance(n, tuple):
+                    # Allow a range of choices
+                    # cancel must be on its own
+                    if allow_cancel and l == [-1]:
+                        return -1
+                    if allow_cancel and len(l) > 1 and -1 in l:
+                        pass
+                    elif n[0] <= len(l) <= n[1] and all(0 <= x < len(options) for x in l):
+                        return l
+                else:
+                    if len(set(l)) == n and all(0 <= x < len(options) for x in l):
+                        return l
             except:
                 pass
         print('Invalid choice')
@@ -209,7 +222,6 @@ class Deck:
             return [self.cards.pop(0) for _ in range(n)]
 
     def return_cards(self, cards):
-        print('Returning cards', cards)
         if isinstance(cards, list):
             self.cards.extend(cards)
         else:
@@ -300,7 +312,7 @@ class Game:
                 self.state = State.MORNING_EFFECTS
             else:
                 n = len(self.active_player.hand) - 5
-                self.instruction = f'Choose {n} card{"s" if n > 1 else ""} to return'
+                self.instruction = f'Choose {n} card{"s" if n > 1 else ""} from your hand to return'
                 self.possible_moves = self.active_player.hand
                 self.number_of_moves_to_choose = n
                 self.state = State.REDUCE_HAND
@@ -393,7 +405,7 @@ class Game:
                         self.log(f'cannot {task.material.task} with an empty craft bench')
                     elif task.material in (STONE, CLAY) and not self.floor:
                         self.log(f'cannot {task.material.task} with an empty floor')
-                    elif task.material == CLOTH and len(self.active_player.waiting_area) == 5:
+                    elif task.material == CLOTH and len(self.active_player.waiting_area) >= 5:
                         self.possible_moves_internal.append(task.material)
                         self.possible_moves.append(f'{task.material.task} (PASS since the waiting area is full)')
                     elif task.material == METAL and not self.active_player.hand:
@@ -439,6 +451,16 @@ class Game:
                 return
             elif action == CLOTH:
                 self.log('TODO: Tailor')
+                self.state = State.PERFORM_TAILOR
+                room_in_waiting_area = max(0, 5 - len(self.active_player.waiting_area))
+                hand_size = len(self.active_player.hand)
+                max_cards = min(room_in_waiting_area, hand_size)
+                self.instruction = f'Select 0–{max_cards} cards from your hand to return'
+                self.possible_moves = []
+                self.possible_moves.extend(self.active_player.hand)
+                self.allow_cancel = True
+                self.number_of_moves_to_choose = (0, max_cards)
+                return
             elif action == CLAY:
                 self.state = State.PERFORM_POTTER
                 self.instruction = 'Select a card from the floor to collect in the craft bench'
@@ -484,6 +506,26 @@ class Game:
             self.reset_possible_moves()
             self.state = self.next_states.pop()
 
+        elif self.state == State.PERFORM_TAILOR:
+            if self.submitted_moves != -1:
+                if not self.submitted_moves:
+                    self.log(f'returns 0 cards')
+                else:
+                    returned_cards = [self.active_player.hand[i].card for i in self.submitted_moves]
+                    self.active_player.hand = Hand(x for i, x in enumerate(self.active_player.hand) if i not in self.submitted_moves)
+                    self.deck.return_cards(returned_cards)
+                    self.active_player.hand.hide()
+                    self.log(f'returns {len(returned_cards)} card{"s" if len(returned_cards) > 1 else ""}')
+
+                cards_to_refill = max(0, 5 - len(self.active_player.hand) - len(self.active_player.waiting_area))
+                if cards_to_refill:
+                    self.log(f'draws {cards_to_refill} card{"s" if cards_to_refill > 1 else ""} into the waiting area')
+                    for _ in range(cards_to_refill):
+                        self.active_player.waiting_area.append(self.deck.draw())
+                if self.current_action_num:
+                    self.current_action_num += 1
+            self.reset_possible_moves()
+            self.state = self.next_states.pop()
         elif self.state == State.PERFORM_POTTER:
             if self.submitted_moves != -1:
                 card = self.floor[self.submitted_moves]
@@ -512,7 +554,7 @@ class Game:
         elif self.state == State.DRAW_WAITING_AREA:
             if self.active_player.waiting_area:
                 waiting_area_size = len(self.active_player.waiting_area)
-                self.log(f'draws {waiting_area_size} card{"s" if waiting_area_size > 1 else ""} from waiting area')
+                self.log(f'draws {waiting_area_size} card{"s" if waiting_area_size > 1 else ""} from the waiting area')
                 self.active_player.hand.add_to_hand(self.active_player.waiting_area)
                 self.active_player.waiting_area = []
             self.active_player_ix = (self.active_player_ix + 1) % len(self.players)
@@ -522,7 +564,7 @@ class Game:
             self.print_state()
         else:
             raise Exception(f'Unknown state {self.state}')
-    
+
     def print_state(self):
         print()
         print(f'Turn {self.turn_number}, {self.active_player.name} active')
