@@ -396,6 +396,7 @@ class Game:
                     self.state = self.next_states.pop()
                 else:
                     self.instruction = f'Choose how to perform action #{self.current_action_num} of {self.actions_to_perform}'
+                    self.number_of_moves_to_choose = 1
                     self.possible_moves_internal = []
                     self.possible_moves = []
 
