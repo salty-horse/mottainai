@@ -5,6 +5,7 @@ import random
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import total_ordering
+from collections import Counter
 
 def prompt_choice(player_name, instruction, options, n=1, allow_cancel=True):
     if isinstance(n, int) and len(options) == n and not allow_cancel:
@@ -189,6 +190,14 @@ class Hand(list):
             items = ', '.join(sorted(c.card if c.visible else '?' for c in self))
             return f'[{items}]'
 
+    @property
+    def revealed_cards(self):
+        return [c for c in self if c.visible]
+
+    @property
+    def hidden_cards(self):
+        return [c for c in self if not c.visible]
+
 
 class Player:
     def __init__(self, i):
@@ -243,6 +252,10 @@ class State(Enum):
     PERFORM_TAILOR = auto()
     PERFORM_POTTER = auto()
     PERFORM_SMITH = auto()
+    REVEAL_CARDS = auto()
+    PERFORM_CRAFT = auto()
+    CHOOSE_COMPLETED_WORK_POS = auto()
+    PLACE_COMPLETED_WORK = auto()
     NIGHT_EFFECTS = auto()
     DRAW_WAITING_AREA = auto()
     GAME_OVER = auto()
@@ -265,6 +278,9 @@ class Game:
         self.current_task_to_perform = None
         self.current_action_num = None
         self.actions_to_perform = None
+        self.completeable_smith_works = []
+        self.completeable_craft_works = []
+        self.completed_work = None
         self.next_states = []
 
     def reset_possible_moves(self):
@@ -304,6 +320,22 @@ class Game:
     @property
     def active_player(self):
         return self.players[self.active_player_ix]
+
+    def find_completeable_works(self):
+        self.completeable_smith_works = []
+        self.completeable_craft_works = []
+        materials_in_hand = Counter(c.card.material for c in self.active_player.hand)
+        materials_in_craft_bench = Counter(c.material for c in self.active_player.craft_bench)
+        for material, hand_count in materials_in_hand.items():
+            if material == PAPER:
+                self.completeable_smith_works.append(material)
+                self.completeable_craft_works.append(material)
+            else:
+                cost = material.value - 1
+                if hand_count - 1 >= cost:
+                    self.completeable_smith_works.append(material)
+                if materials_in_craft_bench[material] >= cost:
+                    self.completeable_craft_works.append(material)
 
     def handle_state(self):
         if self.state == State.CHECK_HAND_SIZE:
@@ -401,6 +433,7 @@ class Game:
                     self.possible_moves = []
 
                     # TODO: Check if works can be completed before allowing CRAFT or SMITH
+                    self.find_completeable_works()
 
                     if task.material == PAPER and not self.active_player.craft_bench:
                         self.log(f'cannot {task.material.task} with an empty craft bench')
@@ -409,8 +442,9 @@ class Game:
                     elif task.material == CLOTH and len(self.active_player.waiting_area) >= 5:
                         self.possible_moves_internal.append(task.material)
                         self.possible_moves.append(f'{task.material.task} (PASS since the waiting area is full)')
-                    elif task.material == METAL and not self.active_player.hand:
-                        self.log(f'cannot {task.material.task} with an empty hand')
+                    elif task.material == METAL and not self.completeable_smith_works:
+                        # No log message as to not reveal information to opponents
+                        pass
                     else:
                         self.possible_moves_internal.append(task.material)
                         self.possible_moves.append(f'{task.material.task} ({task.material.description})')
@@ -422,12 +456,15 @@ class Game:
                     #     self.log(f'cannot Craft {task.material.name} with no matching cards in hand')
                     # else:
 
-                    self.possible_moves_internal.append('craft')
-                    self.possible_moves.append(f'Craft ({task.material.name})')
+                    if task.material in self.completeable_craft_works:
+                        self.possible_moves_internal.append('craft')
+                        self.possible_moves.append(f'Craft ({task.material.name})')
 
                     self.possible_moves_internal.append('pray')
                     self.possible_moves.append('Pray')
                     self.state = State.PERFORM_ACTION
+                    # TODO: Disable auto-selection of 1 action because the
+                    # fast auto-pray may reveal that the player cannot smith.
                     self.next_states.append(State.PERFORM_TASK)
 
         elif self.state == State.PERFORM_ACTION:
@@ -471,9 +508,27 @@ class Game:
                 self.number_of_moves_to_choose = 1
                 return
             elif action == METAL:
-                self.log('TODO: Smith')
+                self.state = State.PERFORM_SMITH
+                self.instruction = 'Select a card to smith'
+                hand_cards = [
+                    (i, c) for (i, c) in enumerate(self.active_player.hand)
+                    if c.card.material in self.completeable_smith_works
+                ]
+                self.possible_moves = [c for (i, c) in hand_cards]
+                self.possible_moves_internal = [i for (i, c) in hand_cards]
+                self.allow_cancel = True
+                self.number_of_moves_to_choose = 1
+                return
             elif action == 'craft':
-                self.log('TODO: Craft')
+                self.state = State.PERFORM_CRAFT
+                self.instruction = 'Select a card to craft'
+                self.possible_moves = [
+                    c for c in self.active_player.hand
+                    if c.card.material == self.current_task_to_perform.material
+                ]
+                self.allow_cancel = True
+                self.number_of_moves_to_choose = 1
+                return
             elif action == 'pray':
                 self.log('prays')
                 self.active_player.waiting_area.append(self.deck.draw())
@@ -527,6 +582,7 @@ class Game:
                     self.current_action_num += 1
             self.reset_possible_moves()
             self.state = self.next_states.pop()
+
         elif self.state == State.PERFORM_POTTER:
             if self.submitted_moves != -1:
                 card = self.floor[self.submitted_moves]
@@ -536,6 +592,82 @@ class Game:
                 if self.current_action_num:
                     self.current_action_num += 1
             self.reset_possible_moves()
+            self.state = self.next_states.pop()
+
+        elif self.state == State.PERFORM_SMITH:
+            if self.submitted_moves != -1:
+                card = self.active_player.hand.pop(self.possible_moves_internal[self.submitted_moves]).card
+                self.completed_work = card
+                ready_to_smith = False
+                if card.material.value - 1 <= 0:
+                    ready_to_smith = True
+                else:
+                    existing_support = [c.card for c in self.active_player.hand.revealed_cards if
+                            c.card.material == card.material]
+                    if card.material.value - 1 <= len(existing_support):
+                        ready_to_smith = True
+                    else:
+                        self.reset_possible_moves()
+                        n = card.material.value - 1 - len(existing_support)
+                        self.instruction = f'Choose {n} card{"s" if n > 1 else ""} from your hand to reveal'
+                        # TODO: Allow cancel - need to return card to hand and delay revealing cards
+                        self.possible_moves = [c.card for c in self.active_player.hand.hidden_cards if
+                            c.card.material == card.material]
+                        self.number_of_moves_to_choose = n
+                        self.state = State.REVEAL_CARDS
+                        return
+
+                if ready_to_smith:
+                    if self.current_action_num:
+                        self.current_action_num += 1
+                    self.reset_possible_moves()
+                    self.state = State.CHOOSE_COMPLETED_WORK_POS
+                    return
+            self.reset_possible_moves()
+            self.state = self.next_states.pop()
+
+        elif self.state == State.REVEAL_CARDS:
+            hidden_cards = [c for c in self.active_player.hand.hidden_cards if
+                c.card.material == self.completed_work.material]
+            if not isinstance(self.submitted_moves, list):
+                self.submitted_moves = [self.submitted_moves]
+            for ix in self.submitted_moves:
+                hidden_cards[ix].visible = True
+                self.log(f'reveals {hidden_cards[ix].card}')
+            if self.current_action_num:
+                self.current_action_num += 1
+            self.reset_possible_moves()
+            self.state = State.CHOOSE_COMPLETED_WORK_POS
+
+
+        elif self.state == State.PERFORM_CRAFT:
+            if self.submitted_moves != -1:
+                self.completed_work = self.active_player.hand.pop(self.submitted_moves).card
+                if self.current_action_num:
+                    self.current_action_num += 1
+                self.reset_possible_moves()
+                self.state = State.CHOOSE_COMPLETED_WORK_POS
+                return
+            self.reset_possible_moves()
+            self.state = self.next_states.pop()
+
+        elif self.state == State.CHOOSE_COMPLETED_WORK_POS:
+            # TODO: Allow cancel (if possible) - will need to delay actually revealing cards
+            self.instruction = f'Choose where to place completed work {self.completed_work}'
+            self.possible_moves = ['Gallery', 'Gift Shop']
+            self.number_of_moves_to_choose = 1
+            self.state = State.PLACE_COMPLETED_WORK
+
+        elif self.state == State.PLACE_COMPLETED_WORK:
+            target_wing = self.active_player.gallery if self.submitted_moves == 0 \
+                     else self.active_player.gift_shop
+            self.reset_possible_moves()
+            target_wing.append(self.completed_work)
+            self.completed_work = None
+            if len(target_wing) == 5:
+                self.log(f'{"Gallery" if self.submitted_moves == 0 else "Gift Shop"} has 5 works. Game over.')
+                self.state = State.GAME_OVER
+            self.print_state()
             self.state = self.next_states.pop()
 
         elif self.state == State.PERFORM_OWN_TASK:
@@ -580,6 +712,10 @@ class Game:
                 print(f'\tTask: {p.task.material.task if p.task else "None"} - {p.task}')
             else:
                 print('\tTask: None')
+            if p.gallery:
+                print(f'\tGallery: {p.gallery}')
+            if p.gift_shop:
+                print(f'\tGift Shop: {p.gift_shop}')
             if p.helpers:
                 print(f'\tHelpers: {p.helpers}')
             if p.craft_bench:
