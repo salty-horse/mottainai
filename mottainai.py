@@ -211,6 +211,23 @@ class Player:
         self.waiting_area = []
         self.task = None
         self.initial_task = None
+        self.covered_helpers = Counter()
+        self.covered_sales_value = Counter()
+
+    def calculate_cover(self):
+        self.covered_helpers = Counter()
+        helpers_by_material = Counter(helper.material for helper in self.helpers)
+        gallery_works_by_material = Counter(work.material for work in self.gallery)
+        for material, count in helpers_by_material.items():
+            if count <= gallery_works_by_material[material] * material.value:
+                self.covered_helpers[material] = helpers_by_material[material]
+
+        self.covered_sales_value = Counter()
+        sales_by_material = Counter(helper.material for helper in self.sales)
+        gift_shop_works_by_material = Counter(work.material for work in self.gift_shop)
+        for material, count in sales_by_material.items():
+            if count <= gift_shop_works_by_material[material] * material.value:
+                self.covered_sales_value[material] = count * material.value
 
 
 class Deck:
@@ -418,8 +435,10 @@ class Game:
             else:
                 if self.actions_to_perform is None:
                     # TODO: Calc cover
-                    self.actions_to_perform = 1 + sum(1 for helper in self.active_player.helpers
-                                     if helper.material == task.material)
+                    self.actions_to_perform = 1 + \
+                        sum(1 for helper in self.active_player.helpers
+                            if helper.material == task.material) + \
+                            self.active_player.covered_helpers[task.material]
                     self.log(f'- {self.actions_to_perform} {task.material.task} action{"s" if self.actions_to_perform > 1 else ""} available')
                     self.current_action_num = 1
 
@@ -611,8 +630,7 @@ class Game:
                         n = card.material.value - 1 - len(existing_support)
                         self.instruction = f'Choose {n} card{"s" if n > 1 else ""} from your hand to reveal'
                         # TODO: Allow cancel - need to return card to hand and delay revealing cards
-                        self.possible_moves = [c.card for c in self.active_player.hand.hidden_cards if
-                            c.card.material == card.material]
+                        self.possible_moves = [c.card for c in self.active_player.hand.hidden_cards if c.card.material == card.material]
                         self.number_of_moves_to_choose = n
                         self.state = State.REVEAL_CARDS
                         return
@@ -663,6 +681,7 @@ class Game:
                      else self.active_player.gift_shop
             self.reset_possible_moves()
             target_wing.append(self.completed_work)
+            self.active_player.calculate_cover()
             self.completed_work = None
             if len(target_wing) == 5:
                 self.log(f'{"Gallery" if self.submitted_moves == 0 else "Gift Shop"} has 5 works. Game over.')
